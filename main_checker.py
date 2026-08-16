@@ -5,6 +5,8 @@ import openpyxl
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from PIL import Image, ImageDraw, ImageFont
 import pdfplumber
+import logging
+logging.getLogger("pdfminer").setLevel(logging.ERROR)  # pdfminerの警告メッセージを無視する
 
 
 # --------------------------------------------------
@@ -219,14 +221,8 @@ def process_all_subfolders(parent_dir: Path, stamp_top="河", stamp_bottom="本"
     # 共通の印鑑画像を1枚だけ事前生成
     stamp_img_path = create_inspection_stamp(stamp_top, stamp_bottom)
 
-    try:
-        # 子フォルダを1つずつループ処理
-        for folder in subfolders:
-            process_folder(folder, stamp_img_path)
-    finally:
-        # 処理がすべて終わったら一時印鑑画像を削除
-        if os.path.exists(stamp_img_path):
-            os.remove(stamp_img_path)
+    for folder in subfolders:
+        process_folder(folder, stamp_img_path)
 
     print("\n" + "=" * 60)
     print("✨ すべての子フォルダに対する一括処理が完了しました。")
