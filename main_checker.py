@@ -171,8 +171,10 @@ def process_folder(folder_path: Path, stamp_img_path: str):
                 # --------------------------------------------------
                 check_price = bool(ex_price_clean and (
                     ex_price_clean in pdf_text_clean or 
+                    ex_price_clean in pdf_text_no_newline or 
                     f"{ex_price_clean}.00" in pdf_text_clean
                 ))
+                
 
                 results = [
                     f"型式: {'OK' if check_item else 'NG'}",
