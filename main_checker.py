@@ -1,12 +1,16 @@
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
+import shutil
+
 import openpyxl
 from openpyxl.drawing.image import Image as OpenpyxlImage
-from PIL import Image, ImageDraw, ImageFont
 import pdfplumber
-import logging
-logging.getLogger("pdfminer").setLevel(logging.ERROR)  # pdfminerの警告メッセージを無視する
+from PIL import Image, ImageDraw, ImageFont
+
+# pdfminerの警告メッセージを抑制
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
 
 # --------------------------------------------------
@@ -86,29 +90,50 @@ def extract_excel_data(sheet):
 # --------------------------------------------------
 # 3. 単一フォルダ内の照合 ＆ 押印処理
 # --------------------------------------------------
-def process_folder(folder_path: Path, stamp_img_path: str):
+def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
     """指定された1つのフォルダ内の Excel / PDF を照合・押印する"""
     excel_files = [f for f in folder_path.glob("*.xlsx") if not f.name.startswith("~$")]
     pdf_files = [f for f in folder_path.glob("*.pdf") if not f.name.startswith("~$")]
 
     if not excel_files or not pdf_files:
         print(f"⚠️ スキップ: {folder_path.name} (Excel または PDF が不足しています)")
-        return
+        return False
 
     print(f"\n📂 フォルダ処理中: 【 {folder_path.name} 】")
     print(f"   (Excel {len(excel_files)} 件 / PDF {len(pdf_files)} 件)")
 
-    # 全PDFテキストの読み込み
+    all_stamped = True
+
+    # 全PDFテキストおよび注釈の読み込み
     pdf_list = []
     for pdf_file in pdf_files:
         try:
             with pdfplumber.open(pdf_file) as pdf:
                 full_text = ""
                 for page in pdf.pages:
-                    text = page.extract_text()
-                    if text:
-                        full_text += text + "\n"
-                
+                    # 1. レイアウトモードで本文テキスト抽出（列の文字割り込みを防止）
+                    text = ""
+                    try:
+                        text = page.extract_text(layout=True) or ""
+                    except Exception as e:
+                        print(f"   ⚠️ 本文抽出警告 ({pdf_file.name}): {e}")
+
+                    # 2. 注釈テキスト抽出（破損文字コード例外はスキップ）
+                    annot_text = ""
+                    try:
+                        if hasattr(page, 'annots') and page.annots:
+                            for annot in page.annots:
+                                try:
+                                    content = annot.get("contents") or annot.get("contents_pt") or ""
+                                    if content:
+                                        annot_text += f"\n{content}"
+                                except Exception:
+                                    continue
+                    except Exception:
+                        pass
+
+                    full_text += text + "\n" + annot_text + "\n"
+
                 pdf_list.append({
                     "name": pdf_file.name,
                     "text": full_text,
@@ -119,8 +144,14 @@ def process_folder(folder_path: Path, stamp_img_path: str):
 
     # 各Excelの照合処理
     for excel_file in excel_files:
+        wb = None
         try:
-            wb = openpyxl.load_workbook(excel_file, data_only=True)
+            # 特殊スタイルの読み込みエラー回避
+            try:
+                wb = openpyxl.load_workbook(excel_file, data_only=True)
+            except Exception:
+                wb = openpyxl.load_workbook(excel_file, data_only=True, read_only=True)
+
             sheet = wb.active
             
             ex_data = extract_excel_data(sheet)
@@ -129,62 +160,74 @@ def process_folder(folder_path: Path, stamp_img_path: str):
             ex_qty = ex_data["qty"]
             ex_price_clean = ex_data["price"].replace(",", "").strip()
 
-            print(f"   📊 Excel: {excel_file.name} (PO: '{ex_po}')")
+            print(f"   📊 Excelデータ: {excel_file.name}")
+            print(f"      └ [PO: '{ex_po}'] | [型式: '{ex_item}'] | [数量: '{ex_qty}'] | [単価: '{ex_price_clean}']")
 
-            if not ex_po:
-                print("      ⚠️ Excel内に注文番号 (D11) がありません。スキップします。")
-                continue
-
+            # --- PDFの特定ロジック ---
             matched_pdf = None
-            for pdf_data in pdf_list:
-                if ex_po in pdf_data["text"]:
-                    matched_pdf = pdf_data
-                    break
+            if ex_po:
+                for pdf_data in pdf_list:
+                    if ex_po in pdf_data["text"]:
+                        matched_pdf = pdf_data
+                        break
+            else:
+                if pdf_list:
+                    matched_pdf = pdf_list[0]
+                    print("      ℹ️ 注文番号がないため、フォルダ内の最初のPDFと照合します。")
 
             if matched_pdf:
-                # 照合用：カンマを除去したPDFテキスト
                 pdf_text_clean = matched_pdf["text_no_comma"]
 
-                # --------------------------------------------------
-                # 1. 型式チェック（改行とスペースを除去して包含チェック）
-                # --------------------------------------------------
-                ex_item_clean = ex_item.strip().replace(" ", "").replace("　", "")
-                
-                # PDFテキストから改行(\n)・復帰(\r)・スペース(半角・全角)を除去
+                # 1. 型式チェック（レイアウト維持抽出により1つのブロックとして厳密判定）
+                ex_item_clean = ex_item.strip().replace(" ", "").replace(" ", "")
                 pdf_text_no_newline = (
                     pdf_text_clean.replace("\n", "")
                                   .replace("\r", "")
+                                  .replace("\t", "")
                                   .replace(" ", "")
                                   .replace(" ", "")
                 )
                 
-                # Excelの型式がPDF内にそのまま含まれているか判定
-                check_item = bool(ex_item_clean and (ex_item_clean in pdf_text_no_newline))
+                check_item = bool(
+                    ex_item_clean and (
+                        ex_item_clean in pdf_text_no_newline or 
+                        f"K-{ex_item_clean}" in pdf_text_no_newline or
+                        ex_item_clean in pdf_text_no_newline.replace("K-", "")
+                    )
+                )
 
-                # --------------------------------------------------
                 # 2. 数量チェック
-                # --------------------------------------------------
                 check_qty = bool(ex_qty and ex_qty in pdf_text_clean)
 
-                # --------------------------------------------------
-                # 3. 単価チェック（整数パターン と .00 パターンの両方を吸収）
-                # --------------------------------------------------
+                # 3. 単価チェック
                 check_price = bool(ex_price_clean and (
                     ex_price_clean in pdf_text_clean or 
                     ex_price_clean in pdf_text_no_newline or 
                     f"{ex_price_clean}.00" in pdf_text_clean
                 ))
-                
+
+                # PDF側データの検出状況ログ出力
+                po_log = f"'{ex_po}'" if (ex_po and ex_po in matched_pdf["text"]) else ("なし" if not ex_po else "未検出")
+                item_log = f"'{ex_item}'" if check_item else "未検出"
+                qty_log = f"'{ex_qty}'" if check_qty else "未検出"
+                price_log = f"'{ex_price_clean}'" if check_price else "未検出"
+
+                print(f"   📄 PDF検出結果: {matched_pdf['name']}")
+                print(f"      └ [PO: {po_log}] | [型式: {item_log}] | [数量: {qty_log}] | [単価: {price_log}]")
 
                 results = [
                     f"型式: {'OK' if check_item else 'NG'}",
                     f"数量: {'OK' if check_qty else 'NG'}",
                     f"単価: {'OK' if check_price else 'NG'}"
                 ]
-                print(f"      🔍 結果: { ' | '.join(results) } (PDF: {matched_pdf['name']})")
+                print(f"      🔍 照合結果: { ' | '.join(results) }")
 
-                # 型式・数量・単価の3項目 OK でスタンプ挿入
                 if check_item and check_qty and check_price:
+                    if getattr(wb, 'read_only', False):
+                        wb.close()
+                        wb = openpyxl.load_workbook(excel_file)
+                        sheet = wb.active
+
                     img = OpenpyxlImage(stamp_img_path)
                     img.width, img.height = 75, 75
                     sheet.add_image(img, "T7")
@@ -192,12 +235,20 @@ def process_folder(folder_path: Path, stamp_img_path: str):
                     print(f"      🌸 3項目一致 ➔ スタンプ押印完了 (T7)")
                 else:
                     print("      ⚠️ 不一致項目があるため押印スキップ")
+                    all_stamped = False
 
             else:
                 print(f"      ❌ 対応する注文書PDFが見つかりませんでした。")
+                all_stamped = False
 
         except Exception as e:
             print(f"❌ Excelエラー ({excel_file.name}): {e}")
+            all_stamped = False
+        finally:
+            if wb and hasattr(wb, 'close'):
+                wb.close()
+
+    return all_stamped
 
 
 # --------------------------------------------------
@@ -209,22 +260,32 @@ def process_all_subfolders(parent_dir: Path, stamp_top="河", stamp_bottom="本"
         print(f"❌ エラー: 親フォルダ '{parent_dir}' が存在しません。")
         return
 
-    # 親フォルダ直下にある「ディレクトリ（フォルダ）」のみを抽出
-    subfolders = [f for f in parent_dir.iterdir() if f.is_dir()]
+    approved_dir = parent_dir / "approved"
+    approved_dir.mkdir(exist_ok=True)
+
+    subfolders = [f for f in parent_dir.iterdir() if f.is_dir() and f.name != "approved"]
 
     if not subfolders:
-        print(f"⚠️ '{parent_dir}' 内に子フォルダが見つかりませんでした。")
+        print(f"⚠️ '{parent_dir}' 内に処理対象の子フォルダが見つかりませんでした。")
         return
 
     print("=" * 60)
     print(f"🚀 一括処理を開始します: 全 {len(subfolders)} 個のフォルダを検出")
     print("=" * 60)
 
-    # 共通の印鑑画像を1枚だけ事前生成
     stamp_img_path = create_inspection_stamp(stamp_top, stamp_bottom)
 
     for folder in subfolders:
-        process_folder(folder, stamp_img_path)
+        is_success = process_folder(folder, stamp_img_path)
+        
+        if is_success:
+            target_path = approved_dir / folder.name
+            
+            if target_path.exists():
+                shutil.rmtree(target_path)
+                
+            shutil.move(str(folder), str(approved_dir))
+            print(f"   🚚 押印完了のため '{approved_dir.name}/{folder.name}' へ移動しました。")
 
     print("\n" + "=" * 60)
     print("✨ すべての子フォルダに対する一括処理が完了しました。")
@@ -234,8 +295,5 @@ def process_all_subfolders(parent_dir: Path, stamp_top="河", stamp_bottom="本"
 # 実行ブロック
 # --------------------------------------------------
 if __name__ == "__main__":
-    # 親フォルダのパスを指定（例: "./files" や "./customer_orders"）
     parent_directory = Path("./files")
-    
-    # 実行（親フォルダ内の全子フォルダを連続処理）
     process_all_subfolders(parent_directory, stamp_top="河", stamp_bottom="本")
