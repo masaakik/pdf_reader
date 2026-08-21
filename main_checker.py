@@ -3,14 +3,35 @@ import os
 from datetime import datetime
 from pathlib import Path
 import shutil
+import re
 
 import openpyxl
 from openpyxl.drawing.image import Image as OpenpyxlImage
 import pdfplumber
+from pypdf import PdfReader
 from PIL import Image, ImageDraw, ImageFont
+
+# 最終手段用OCRライブラリ（遅延読み込み用フラグ）
+EASYOCR_AVAILABLE = False
+try:
+    import easyocr
+    import pypdfium2
+    import numpy as np
+    EASYOCR_AVAILABLE = True
+except ImportError:
+    EASYOCR_AVAILABLE = False
 
 # pdfminerの警告メッセージを抑制
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
+
+# EasyOCRリーダーのキャッシュ変数
+ocr_reader = None
+
+def get_ocr_reader():
+    global ocr_reader
+    if ocr_reader is None and EASYOCR_AVAILABLE:
+        ocr_reader = easyocr.Reader(['en'], gpu=False)
+    return ocr_reader
 
 
 # --------------------------------------------------
@@ -88,18 +109,17 @@ def extract_excel_data(sheet):
 
 
 # --------------------------------------------------
-# 補助機能: 救済モード用クロップ抽出（MCL型式列ピンポイント切り抜き）
+# 補助機能: 救済モード用クロップ抽出（幅指定可能）
 # --------------------------------------------------
-def extract_left_column_text(pdf_path: Path) -> str:
-    """PDFの左側18%エリアのみを指定して型式列のみを垂直抽出する"""
+def extract_left_column_text(pdf_path: Path, ratio: float = 0.18) -> str:
+    """指定した幅割合でPDFの左側エリアを垂直抽出する"""
     extracted_text = ""
     try:
         with pdfplumber.open(pdf_path) as pdf:
             for page in pdf.pages:
                 width = page.width
                 height = page.height
-                # 幅を18%に限定して右隣の説明文（DESCRIPTION列）の巻き込みを遮断
-                crop_box = (0, 0, width * 0.18, height)
+                crop_box = (0, 0, width * ratio, height)
                 
                 cropped_page = page.crop(crop_box)
                 text = cropped_page.extract_text() or ""
@@ -107,6 +127,52 @@ def extract_left_column_text(pdf_path: Path) -> str:
     except Exception:
         pass
     return extracted_text
+
+
+# --------------------------------------------------
+# 最終手段機能: pypdfium2 + easyocr による画像文字認識（型式＋単価抽出対応）
+# --------------------------------------------------
+def perform_ocr_rescue(pdf_path: Path, target_item_clean: str) -> tuple[bool, str]:
+    """最終手段: PDFを画像化(pypdfium2)してOCRで型式および文字全体のテキストを取得する"""
+    if not EASYOCR_AVAILABLE:
+        return False, ""
+
+    pdf = None
+    all_ocr_text = ""
+    is_item_found = False
+
+    try:
+        import pypdfium2 as pdfium
+        import numpy as np
+
+        reader = get_ocr_reader()
+        if not reader:
+            return False, ""
+
+        pdf = pdfium.PdfDocument(pdf_path)
+        target_norm = re.sub(r'[^A-Za-z0-9]', '', target_item_clean).upper()
+
+        for page in pdf:
+            pil_image = page.render(scale=3).to_pil()
+            img_np = np.array(pil_image)
+            
+            results = reader.readtext(img_np, detail=0)
+            page_ocr_text = " ".join(results)
+            all_ocr_text += page_ocr_text + " "
+
+            ocr_norm = re.sub(r'[^A-Za-z0-9]', '', page_ocr_text).upper()
+            if target_norm in ocr_norm:
+                is_item_found = True
+
+    except Exception as e:
+        print(f"      └ ⚠️ OCR処理例外: {e}")
+    finally:
+        if pdf is not None:
+            try:
+                pdf.close()
+            except Exception:
+                pass
+    return is_item_found, all_ocr_text
 
 
 # --------------------------------------------------
@@ -130,38 +196,41 @@ def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
     pdf_list = []
     for pdf_file in pdf_files:
         try:
-            with pdfplumber.open(pdf_file) as pdf:
-                full_text = ""
-                for page in pdf.pages:
-                    # 1. 本文テキスト抽出
-                    text = ""
-                    try:
-                        text = page.extract_text() or ""
-                    except Exception as e:
-                        print(f"   ⚠️ 本文抽出警告 ({pdf_file.name}): {e}")
+            full_text = ""
+            
+            # 1. 本文テキスト抽出 (pdfplumber)
+            try:
+                with pdfplumber.open(pdf_file) as pdf:
+                    for page in pdf.pages:
+                        full_text += (page.extract_text() or "") + "\n"
+            except Exception as e:
+                print(f"   ⚠️ 本文抽出警告 ({pdf_file.name}): {e}")
 
-                    # 2. 注釈テキスト抽出（PDF-XChange等での上書き文字）
-                    annot_text = ""
-                    try:
-                        if hasattr(page, 'annots') and page.annots:
-                            for annot in page.annots:
-                                try:
-                                    content = annot.get("contents") or annot.get("contents_pt") or ""
-                                    if content:
-                                        annot_text += f"\n{content}"
-                                except Exception:
-                                    continue
-                    except Exception:
-                        pass
+            # 2. 注釈（上書き）テキスト抽出 (pypdf: 文字コードエラーを完全回避)
+            annot_text = ""
+            try:
+                reader = PdfReader(pdf_file)
+                for pypdf_page in reader.pages:
+                    if "/Annots" in pypdf_page:
+                        for annot in pypdf_page["/Annots"]:
+                            try:
+                                obj = annot.get_object()
+                                contents = obj.get("/Contents")
+                                if contents and isinstance(contents, str):
+                                    annot_text += f"\n{contents}"
+                            except Exception:
+                                continue
+            except Exception as e:
+                print(f"   ⚠️ 注釈抽出警告 ({pdf_file.name}): {e}")
 
-                    full_text += text + "\n" + annot_text + "\n"
+            full_pdf_text = full_text + "\n" + annot_text + "\n"
 
-                pdf_list.append({
-                    "path": pdf_file,
-                    "name": pdf_file.name,
-                    "text": full_text,
-                    "text_no_comma": full_text.replace(",", "")
-                })
+            pdf_list.append({
+                "path": pdf_file,
+                "name": pdf_file.name,
+                "text": full_pdf_text,
+                "text_raw": full_pdf_text
+            })
         except Exception as e:
             print(f"❌ PDF読み込みエラー ({pdf_file.name}): {e}")
 
@@ -169,7 +238,6 @@ def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
     for excel_file in excel_files:
         wb = None
         try:
-            # 特殊スタイルの読み込みエラー回避
             try:
                 wb = openpyxl.load_workbook(excel_file, data_only=True)
             except Exception:
@@ -186,19 +254,24 @@ def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
             print(f"   📊 Excelデータ: {excel_file.name}")
             print(f"      └ [PO: '{ex_po}'] | [型式: '{ex_item}'] | [数量: '{ex_qty}'] | [単価: '{ex_price_clean}']")
 
-            # --- PDFの特定ロジック（ファイル名優先 ➔ 本文検索） ---
+            # --- PDFの特定ロジック（頭ゼロ除去・アスタリスク除去柔軟マッチング） ---
             matched_pdf = None
             if ex_po:
-                # 優先①: PDFファイル名にPO番号が含まれている場合
+                ex_po_lstrip = ex_po.lstrip('0')
+                
+                # 1. ファイル名で検索
                 for pdf_data in pdf_list:
-                    if ex_po in pdf_data["name"]:
+                    if ex_po in pdf_data["name"] or (ex_po_lstrip and ex_po_lstrip in pdf_data["name"]):
                         matched_pdf = pdf_data
                         break
                 
-                # 優先②: ファイル名になければ本文検索
+                # 2. 本文テキストで検索（記号・頭ゼロ除去対応）
                 if not matched_pdf:
                     for pdf_data in pdf_list:
-                        if ex_po in pdf_data["text"]:
+                        pdf_text_clean_po = pdf_data["text"].replace("*", "").replace("|", "").replace(" ", "")
+                        if (ex_po in pdf_data["text"] or 
+                            ex_po in pdf_text_clean_po or 
+                            (ex_po_lstrip and ex_po_lstrip in pdf_text_clean_po)):
                             matched_pdf = pdf_data
                             break
             else:
@@ -207,73 +280,126 @@ def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
                     print("      ℹ️ 注文番号がないため、フォルダ内の最初のPDFと照合します。")
 
             if matched_pdf:
-                pdf_text_clean = matched_pdf["text_no_comma"]
+                pdf_text_raw = matched_pdf["text_raw"]
+                pdf_text_no_comma = pdf_text_raw.replace(",", "")
+                ocr_extracted_text = ""  # OCR実行時に取得した全文を保持
 
                 # --------------------------------------------------
-                # 1. 型式チェック（1回目：標準チェック）
+                # 1. 型式チェック（4段階判定：標準 ➔ 18%クロップ ➔ 35%クロップ ➔ 最終手段OCR）
                 # --------------------------------------------------
                 ex_item_clean = ex_item.strip().replace(" ", "").replace(" ", "")
                 pdf_text_no_newline = (
-                    pdf_text_clean.replace("\n", "")
-                                  .replace("\r", "")
-                                  .replace("\t", "")
-                                  .replace(" ", "")
-                                  .replace(" ", "")
+                    pdf_text_raw.replace("\n", "")
+                                .replace("\r", "")
+                                .replace("\t", "")
+                                .replace(" ", "")
+                                .replace(" ", "")
                 )
                 
                 ex_item_norm = ex_item_clean.replace("-", "").upper()
                 pdf_text_norm = pdf_text_no_newline.replace("-", "").upper()
+                
+                # 英数字のみに完全修飾（記号ブレ吸収）
+                ex_item_alphanumeric = re.sub(r'[^A-Za-z0-9]', '', ex_item_clean).upper()
+                pdf_text_alphanumeric = re.sub(r'[^A-Za-z0-9]', '', pdf_text_no_newline).upper()
 
+                # 第1段階: 標準チェック
                 check_item = bool(
                     ex_item_clean and (
                         ex_item_clean in pdf_text_no_newline or 
                         f"K-{ex_item_clean}" in pdf_text_no_newline or
                         ex_item_clean in pdf_text_no_newline.replace("K-", "") or
-                        ex_item_norm in pdf_text_norm
+                        ex_item_norm in pdf_text_norm or
+                        ex_item_alphanumeric in pdf_text_alphanumeric
                     )
                 )
 
-                # --------------------------------------------------
-                # 救済モード（1回目がNGの場合のみピンポイント位置解析を発動）
-                # --------------------------------------------------
+                # 第2・3段階: 救済クロップ（18% / 35%）
                 if not check_item and ex_item_clean:
                     print("      └ ⚠️ 通常抽出で型式が不一致のため、救済モード（ブロック位置解析）を発動します...")
-                    left_text = extract_left_column_text(matched_pdf["path"])
-                    left_text_clean = (
-                        left_text.replace("\n", "")
-                                 .replace("\r", "")
-                                 .replace("\t", "")
-                                 .replace(" ", "")
-                                 .replace(" ", "")
-                    )
-                    left_text_norm = left_text_clean.replace("-", "").upper()
+                    
+                    # 2段階目: MCL用（安全な18%幅）
+                    left_text_18 = extract_left_column_text(matched_pdf["path"], ratio=0.18)
+                    clean_18 = left_text_18.replace("\n", "").replace("\r", "").replace("\t", "").replace(" ", "").replace(" ", "")
+                    norm_18 = clean_18.replace("-", "").upper()
+                    alpha_18 = re.sub(r'[^A-Za-z0-9]', '', clean_18).upper()
 
-                    if (ex_item_clean in left_text_clean or 
-                        f"K-{ex_item_clean}" in left_text_clean or 
-                        ex_item_clean in left_text_clean.replace("K-", "") or
-                        ex_item_norm in left_text_norm):
+                    if (ex_item_clean in clean_18 or f"K-{ex_item_clean}" in clean_18 or ex_item_clean in clean_18.replace("K-", "") or ex_item_norm in norm_18 or ex_item_alphanumeric in alpha_18):
                         check_item = True
-                        print("      └ 🌸 救済モードにより型式ブロックを正常検出！")
+                        print("      └ 🌸 救済モード(18%幅)により型式ブロックを正常検出！")
+                    else:
+                        # 3段階目: 通常レイアウト用（広めの35%幅）
+                        left_text_35 = extract_left_column_text(matched_pdf["path"], ratio=0.35)
+                        clean_35 = left_text_35.replace("\n", "").replace("\r", "").replace("\t", "").replace(" ", "").replace(" ", "")
+                        norm_35 = clean_35.replace("-", "").upper()
+                        alpha_35 = re.sub(r'[^A-Za-z0-9]', '', clean_35).upper()
+
+                        if (ex_item_clean in clean_35 or f"K-{ex_item_clean}" in clean_35 or ex_item_clean in clean_35.replace("K-", "") or ex_item_norm in norm_35 or ex_item_alphanumeric in alpha_35):
+                            check_item = True
+                            print("      └ 🌸 救済モード(35%幅)により型式ブロックを正常検出！")
+
+                # 第4段階: 【最終手段】OCRスキャン解析（テキスト層が存在しない図面PDF用）
+                if not check_item and ex_item_clean:
+                    print("      └ 🔍 最終手段: OCR（画像文字認識）スキャン解析を起動中...")
+                    is_ocr_ok, ocr_text_res = perform_ocr_rescue(matched_pdf["path"], ex_item_clean)
+                    ocr_extracted_text = ocr_text_res
+                    if is_ocr_ok:
+                        check_item = True
+                        print("      └ 🌸 OCRスキャン解析により図面内の型式文字を正常検出！")
 
                 # --------------------------------------------------
                 # 2. 数量チェック
                 # --------------------------------------------------
-                check_qty = bool(ex_qty and ex_qty in pdf_text_clean)
+                check_qty = bool(ex_qty and (ex_qty in pdf_text_no_comma or ex_qty in ocr_extracted_text))
 
                 # --------------------------------------------------
-                # 3. 単価チェック
+                # 3. 単価チェック（空欄/特定型式免除 ＋ カンマ・円記号・OCR対応）
                 # --------------------------------------------------
-                check_price = bool(ex_price_clean and (
-                    ex_price_clean in pdf_text_clean or 
-                    ex_price_clean in pdf_text_no_newline or 
-                    f"{ex_price_clean}.00" in pdf_text_clean
-                ))
+                if ex_price_clean == "" or ex_item_clean == "57-04-322":
+                    check_price = True
+                else:
+                    try:
+                        price_val = float(ex_price_clean)
+
+                        patterns = [
+                            ex_price_clean,                                                           # 例: 10850 / 11550
+                            f"{price_val:,.2f}",                                                      # 例: 10,850.00
+                            f"{price_val:,.0f}",                                                      # 例: 10,850 / 11,550
+                            f"¥{price_val:,.0f}", f"￥{price_val:,.0f}",                              # 例: ¥11,550 / ￥11,550
+                            f"JPY{price_val:,.0f}", f"JPY {price_val:,.0f}",                          # 例: JPY 11,550
+                            f"{price_val:.0f}",                                                       # 例: 10850
+                            f"{price_val:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), # 例: 1.922,20
+                            f"{price_val:.2f}".replace(".", ","),                                     
+                            ex_price_clean.replace(".", ",")
+                        ]
+
+                        # 生テキスト、カンマなしテキスト、OCRテキストの全方向から照合
+                        check_price = (
+                            any(p in pdf_text_raw for p in patterns) or 
+                            any(p in pdf_text_no_comma for p in patterns) or
+                            any(p in ocr_extracted_text for p in patterns)
+                        )
+
+                    except ValueError:
+                        check_price = (ex_price_clean in pdf_text_raw) or (ex_price_clean in pdf_text_no_comma) or (ex_price_clean in ocr_extracted_text)
 
                 # PDF側データの検出状況ログ出力
-                po_log = f"'{ex_po}'" if (ex_po and ex_po in matched_pdf["text"]) else ("なし" if not ex_po else "未検出")
+                po_text_check = matched_pdf["text"].replace("*", "").replace("|", "").replace(" ", "")
+                po_name_check = matched_pdf["name"].replace(" ", "")
+                ex_po_lstrip = ex_po.lstrip('0') if ex_po else ""
+                
+                check_po_ok = bool(
+                    ex_po and (
+                        ex_po in po_text_check or 
+                        ex_po in po_name_check or 
+                        (ex_po_lstrip and (ex_po_lstrip in po_text_check or ex_po_lstrip in po_name_check))
+                    )
+                )
+                po_log = f"'{ex_po}'" if check_po_ok else ("なし" if not ex_po else "未検出")
+                
                 item_log = f"'{ex_item}'" if check_item else "未検出"
                 qty_log = f"'{ex_qty}'" if check_qty else "未検出"
-                price_log = f"'{ex_price_clean}'" if check_price else "未検出"
+                price_log = f"'{ex_price_clean}'" if check_price else ("免除(OK)" if (ex_price_clean == "" or ex_item_clean == "57-04-322") else "未検出")
 
                 print(f"   📄 PDF検出結果: {matched_pdf['name']}")
                 print(f"      └ [PO: {po_log}] | [型式: {item_log}] | [数量: {qty_log}] | [単価: {price_log}]")
