@@ -88,6 +88,28 @@ def extract_excel_data(sheet):
 
 
 # --------------------------------------------------
+# 補助機能: 救済モード用クロップ抽出（MCL型式列ピンポイント切り抜き）
+# --------------------------------------------------
+def extract_left_column_text(pdf_path: Path) -> str:
+    """PDFの左側18%エリアのみを指定して型式列のみを垂直抽出する"""
+    extracted_text = ""
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                width = page.width
+                height = page.height
+                # 幅を18%に限定して右隣の説明文（DESCRIPTION列）の巻き込みを遮断
+                crop_box = (0, 0, width * 0.18, height)
+                
+                cropped_page = page.crop(crop_box)
+                text = cropped_page.extract_text() or ""
+                extracted_text += text + "\n"
+    except Exception:
+        pass
+    return extracted_text
+
+
+# --------------------------------------------------
 # 3. 単一フォルダ内の照合 ＆ 押印処理
 # --------------------------------------------------
 def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
@@ -111,14 +133,14 @@ def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
             with pdfplumber.open(pdf_file) as pdf:
                 full_text = ""
                 for page in pdf.pages:
-                    # 1. レイアウトモードで本文テキスト抽出（列の文字割り込みを防止）
+                    # 1. 本文テキスト抽出
                     text = ""
                     try:
-                        text = page.extract_text(layout=True) or ""
+                        text = page.extract_text() or ""
                     except Exception as e:
                         print(f"   ⚠️ 本文抽出警告 ({pdf_file.name}): {e}")
 
-                    # 2. 注釈テキスト抽出（破損文字コード例外はスキップ）
+                    # 2. 注釈テキスト抽出（PDF-XChange等での上書き文字）
                     annot_text = ""
                     try:
                         if hasattr(page, 'annots') and page.annots:
@@ -135,6 +157,7 @@ def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
                     full_text += text + "\n" + annot_text + "\n"
 
                 pdf_list.append({
+                    "path": pdf_file,
                     "name": pdf_file.name,
                     "text": full_text,
                     "text_no_comma": full_text.replace(",", "")
@@ -163,13 +186,21 @@ def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
             print(f"   📊 Excelデータ: {excel_file.name}")
             print(f"      └ [PO: '{ex_po}'] | [型式: '{ex_item}'] | [数量: '{ex_qty}'] | [単価: '{ex_price_clean}']")
 
-            # --- PDFの特定ロジック ---
+            # --- PDFの特定ロジック（ファイル名優先 ➔ 本文検索） ---
             matched_pdf = None
             if ex_po:
+                # 優先①: PDFファイル名にPO番号が含まれている場合
                 for pdf_data in pdf_list:
-                    if ex_po in pdf_data["text"]:
+                    if ex_po in pdf_data["name"]:
                         matched_pdf = pdf_data
                         break
+                
+                # 優先②: ファイル名になければ本文検索
+                if not matched_pdf:
+                    for pdf_data in pdf_list:
+                        if ex_po in pdf_data["text"]:
+                            matched_pdf = pdf_data
+                            break
             else:
                 if pdf_list:
                     matched_pdf = pdf_list[0]
@@ -178,7 +209,9 @@ def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
             if matched_pdf:
                 pdf_text_clean = matched_pdf["text_no_comma"]
 
-                # 1. 型式チェック（レイアウト維持抽出により1つのブロックとして厳密判定）
+                # --------------------------------------------------
+                # 1. 型式チェック（1回目：標準チェック）
+                # --------------------------------------------------
                 ex_item_clean = ex_item.strip().replace(" ", "").replace(" ", "")
                 pdf_text_no_newline = (
                     pdf_text_clean.replace("\n", "")
@@ -188,18 +221,48 @@ def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
                                   .replace(" ", "")
                 )
                 
+                ex_item_norm = ex_item_clean.replace("-", "").upper()
+                pdf_text_norm = pdf_text_no_newline.replace("-", "").upper()
+
                 check_item = bool(
                     ex_item_clean and (
                         ex_item_clean in pdf_text_no_newline or 
                         f"K-{ex_item_clean}" in pdf_text_no_newline or
-                        ex_item_clean in pdf_text_no_newline.replace("K-", "")
+                        ex_item_clean in pdf_text_no_newline.replace("K-", "") or
+                        ex_item_norm in pdf_text_norm
                     )
                 )
 
+                # --------------------------------------------------
+                # 救済モード（1回目がNGの場合のみピンポイント位置解析を発動）
+                # --------------------------------------------------
+                if not check_item and ex_item_clean:
+                    print("      └ ⚠️ 通常抽出で型式が不一致のため、救済モード（ブロック位置解析）を発動します...")
+                    left_text = extract_left_column_text(matched_pdf["path"])
+                    left_text_clean = (
+                        left_text.replace("\n", "")
+                                 .replace("\r", "")
+                                 .replace("\t", "")
+                                 .replace(" ", "")
+                                 .replace(" ", "")
+                    )
+                    left_text_norm = left_text_clean.replace("-", "").upper()
+
+                    if (ex_item_clean in left_text_clean or 
+                        f"K-{ex_item_clean}" in left_text_clean or 
+                        ex_item_clean in left_text_clean.replace("K-", "") or
+                        ex_item_norm in left_text_norm):
+                        check_item = True
+                        print("      └ 🌸 救済モードにより型式ブロックを正常検出！")
+
+                # --------------------------------------------------
                 # 2. 数量チェック
+                # --------------------------------------------------
                 check_qty = bool(ex_qty and ex_qty in pdf_text_clean)
 
+                # --------------------------------------------------
                 # 3. 単価チェック
+                # --------------------------------------------------
                 check_price = bool(ex_price_clean and (
                     ex_price_clean in pdf_text_clean or 
                     ex_price_clean in pdf_text_no_newline or 
