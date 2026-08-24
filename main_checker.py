@@ -8,6 +8,7 @@ from modules.excel_handler import extract_excel_data, apply_stamp_to_excel
 from modules.pdf_extractor import extract_pdf_data
 from modules.match_engine import match_po_number, verify_po_items
 
+print("プログラムの実行を開始しました。")
 
 def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
     """指定された1つのフォルダ内の Excel / PDF を照合・押印する"""

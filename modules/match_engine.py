@@ -126,6 +126,9 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     if ex_price_clean == "" or ex_item_clean == "57-04-322":
         check_price = True
     else:
+        # ★ PDF全体のテキストからスペース（半角・全角）を取り除いた比較用文字列を作成
+        pdf_text_no_space = pdf_text_raw.replace(" ", "").replace(" ", "")
+
         try:
             price_val = float(ex_price_clean)
 
@@ -144,11 +147,17 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
             check_price = (
                 any(p in pdf_text_raw for p in patterns) or 
                 any(p in pdf_text_no_comma for p in patterns) or
-                any(p in ocr_extracted_text for p in patterns)
+                any(p in ocr_extracted_text for p in patterns) or
+                (ex_price_clean in pdf_text_no_space)  # ★ スペース除去テキストとの判定を追加
             )
 
         except ValueError:
-            check_price = (ex_price_clean in pdf_text_raw) or (ex_price_clean in pdf_text_no_comma) or (ex_price_clean in ocr_extracted_text)
+            check_price = (
+                (ex_price_clean in pdf_text_raw) or 
+                (ex_price_clean in pdf_text_no_comma) or 
+                (ex_price_clean in ocr_extracted_text) or
+                (ex_price_clean in pdf_text_no_space)  # ★ 例外時もスペース除去で判定
+            )
 
     return {
         "po": check_po,
