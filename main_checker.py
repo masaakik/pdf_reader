@@ -1,6 +1,7 @@
 from pathlib import Path
 import shutil
 import openpyxl
+from datetime import datetime  # ★ 追加
 
 # 自作モジュールのインポート
 from modules.stamp_generator import create_inspection_stamp
@@ -8,6 +9,11 @@ from modules.excel_handler import extract_excel_data, apply_stamp_to_excel
 from modules.pdf_extractor import extract_pdf_data
 from modules.match_engine import match_po_number, verify_po_items
 
+# ★ 日時ヘッダーを最初に出力する
+now_str = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+print(f"\n============================================================")
+print(f"=== {now_str} 実行開始 ===")
+print(f"============================================================")
 print("プログラムの実行を開始しました。")
 
 def process_folder(folder_path: Path, stamp_img_path: str) -> bool:

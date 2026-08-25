@@ -32,7 +32,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     pdf_text_raw = matched_pdf["text_raw"]
     pdf_text_no_comma = pdf_text_raw.replace(",", "")
     ocr_extracted_text = ""
-    rescue_logs = []  # ★ メッセージ出力用の配列を用意
+    rescue_logs = []  # メッセージ出力用配列
 
     ex_po = ex_data["po"]
     ex_item = ex_data["item"]
@@ -72,6 +72,10 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     ex_item_alphanumeric = re.sub(r'[^A-Za-z0-9]', '', ex_item_clean).upper()
     pdf_text_alphanumeric = re.sub(r'[^A-Za-z0-9]', '', pdf_text_no_newline).upper()
 
+    # O/I/0 の表記揺れを補正した判定テキスト
+    pdf_text_zero_o = pdf_text_alphanumeric.replace("1OX", "10X").replace("IOX", "10X").replace("I0X", "10X")
+    ex_item_zero_o = ex_item_alphanumeric.replace("1OX", "10X").replace("IOX", "10X").replace("I0X", "10X")
+
     # 第1段階: 標準チェック
     check_item = bool(
         ex_item_clean and (
@@ -79,7 +83,8 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
             f"K-{ex_item_clean}" in pdf_text_no_newline or
             ex_item_clean in pdf_text_no_newline.replace("K-", "") or
             ex_item_norm in pdf_text_norm or
-            ex_item_alphanumeric in pdf_text_alphanumeric
+            ex_item_alphanumeric in pdf_text_alphanumeric or
+            ex_item_zero_o in pdf_text_zero_o
         )
     )
 
@@ -107,31 +112,18 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
                 check_item = True
                 rescue_logs.append("      └ 🌸 救済モード(35%幅)により型式ブロックを正常検出！")
 
-    # 第4段階: 【最終手段】OCRスキャン解析
-    if not check_item and ex_item_clean:
-        rescue_logs.append("      └ 🔍 最終手段: OCR（画像文字認識）スキャン解析を起動中...")
-        is_ocr_ok, ocr_text_res = perform_ocr_rescue(matched_pdf["path"], ex_item_clean)
-        ocr_extracted_text = ocr_text_res
-        if is_ocr_ok:
-            check_item = True
-            rescue_logs.append("      └ 🌸 OCRスキャン解析により図面内の型式文字を正常検出！")
+    # --------------------------------------------------
+    # 3. 事前単価チェック
+    # --------------------------------------------------
+    is_price_exempt = (ex_price_clean == "" or ex_item_clean == "57-04-322")
+    pre_check_price = False
 
-    # --------------------------------------------------
-    # 3. 数量チェック
-    # --------------------------------------------------
-    check_qty = bool(ex_qty and (ex_qty in pdf_text_no_comma or ex_qty in ocr_extracted_text))
-
-    # --------------------------------------------------
-    # 4. 単価チェック
-    # --------------------------------------------------
-    if ex_price_clean == "" or ex_item_clean == "57-04-322":
-        check_price = True
-    else:
+    if is_price_exempt:
+        pre_check_price = True
+    elif ex_price_clean:
         pdf_text_no_space = pdf_text_raw.replace(" ", "").replace(" ", "")
-
         try:
             price_val = float(ex_price_clean)
-
             patterns = [
                 ex_price_clean,
                 f"{price_val:,.2f}",
@@ -143,20 +135,66 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
                 f"{price_val:.2f}".replace(".", ","),
                 ex_price_clean.replace(".", ",")
             ]
+            pre_check_price = (
+                any(p in pdf_text_raw for p in patterns) or 
+                any(p in pdf_text_no_comma for p in patterns) or
+                (ex_price_clean in pdf_text_no_space)
+            )
+        except ValueError:
+            pre_check_price = (
+                (ex_price_clean in pdf_text_raw) or 
+                (ex_price_clean in pdf_text_no_comma) or 
+                (ex_price_clean in pdf_text_no_space)
+            )
 
+    # --------------------------------------------------
+    # 4. 第4段階: 【最終手段】OCRスキャン解析（型式NG または 単価NG の場合に起動）
+    # --------------------------------------------------
+    if (not check_item or not pre_check_price) and ex_item_clean:
+        rescue_logs.append("      └ 🔍 最終手段: OCR（画像文字認識）スキャン解析を起動中...")
+        is_ocr_ok, ocr_text_res = perform_ocr_rescue(matched_pdf["path"], ex_item_clean)
+        ocr_extracted_text = ocr_text_res
+        
+        if is_ocr_ok:
+            check_item = True
+            rescue_logs.append("      └ 🌸 OCRスキャン解析により図面内の文字情報を正常検出！")
+
+    # --------------------------------------------------
+    # 5. 最終数量 ＆ 最終単価チェック (OCRテキスト含めて確定)
+    # --------------------------------------------------
+    check_qty = bool(ex_qty and (ex_qty in pdf_text_no_comma or ex_qty in ocr_extracted_text))
+
+    if is_price_exempt:
+        check_price = True
+    else:
+        pdf_text_no_space = pdf_text_raw.replace(" ", "").replace(" ", "")
+        try:
+            price_val = float(ex_price_clean)
+            patterns = [
+                ex_price_clean,
+                f"{price_val:,.2f}",
+                f"{price_val:,.0f}",
+                f"¥{price_val:,.0f}", f"￥{price_val:,.0f}",
+                f"JPY{price_val:,.0f}", f"JPY {price_val:,.0f}",
+                f"{price_val:.0f}",
+                f"{price_val:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                f"{price_val:.2f}".replace(".", ","),
+                ex_price_clean.replace(".", ",")
+            ]
             check_price = (
                 any(p in pdf_text_raw for p in patterns) or 
                 any(p in pdf_text_no_comma for p in patterns) or
                 any(p in ocr_extracted_text for p in patterns) or
-                (ex_price_clean in pdf_text_no_space)
+                (ex_price_clean in pdf_text_no_space) or
+                (ex_price_clean in ocr_extracted_text.replace(",", "").replace(" ", ""))
             )
-
         except ValueError:
             check_price = (
                 (ex_price_clean in pdf_text_raw) or 
                 (ex_price_clean in pdf_text_no_comma) or 
                 (ex_price_clean in ocr_extracted_text) or
-                (ex_price_clean in pdf_text_no_space)
+                (ex_price_clean in pdf_text_no_space) or
+                (ex_price_clean in ocr_extracted_text.replace(",", "").replace(" ", ""))
             )
 
     return {
@@ -165,5 +203,5 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
         "qty": check_qty,
         "price": check_price,
         "is_all_ok": (check_item and check_qty and check_price),
-        "rescue_logs": rescue_logs  # ★ 溜めたログメッセージを返却
+        "rescue_logs": rescue_logs
     }

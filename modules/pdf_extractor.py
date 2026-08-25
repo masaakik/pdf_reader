@@ -86,7 +86,7 @@ def extract_left_column_text(pdf_path: Path, ratio: float = 0.18) -> str:
 
 
 def perform_ocr_rescue(pdf_path: Path, target_item_clean: str) -> tuple[bool, str]:
-    """最終手段: PDFを画像化(pypdfium2)してOCRで型式文字を認識・照合する（ファイルロック解除対応）"""
+    """最終手段: 1ページ目を軽量化画像(scale=1.5)で高速OCR解析する"""
     if not EASYOCR_AVAILABLE:
         print("      └ ⚠️ easyocr / pypdfium2 パッケージが未インストールのためOCRをスキップします。")
         return False, ""
@@ -106,24 +106,65 @@ def perform_ocr_rescue(pdf_path: Path, target_item_clean: str) -> tuple[bool, st
         pdf = pdfium.PdfDocument(pdf_path)
         target_norm = re.sub(r'[^A-Za-z0-9]', '', target_item_clean).upper()
 
-        for page in pdf:
-            pil_image = page.render(scale=3).to_pil()
+        # --------------------------------------------------
+        # 1. 注文書ページ（1ページ目など図面以外）のみ取得
+        # --------------------------------------------------
+        target_indices = []
+        try:
+            with pdfplumber.open(pdf_path) as plumb_pdf:
+                for idx, page in enumerate(plumb_pdf.pages):
+                    page_text = page.extract_text() or ""
+                    if "This Drawing is the property of Kyowa" not in page_text:
+                        target_indices.append(idx)
+        except Exception:
+            pass
+
+        if not target_indices:
+            target_indices = [0]  # フォールバック
+
+        # --------------------------------------------------
+        # 2. 高精度OCR処理 (scale=3.0 で文字認識の精度を最優先)
+        # --------------------------------------------------
+        for idx in target_indices:
+            page = pdf[idx]
+            
+            # ★ scale=3.0 ＋ グレースケールで微小な文字（4とAなど）の潰れを完全防止
+            pil_image = page.render(scale=3.0).to_pil().convert('L')
             img_np = np.array(pil_image)
             
             results = reader.readtext(img_np, detail=0)
             page_ocr_text = " ".join(results)
             all_ocr_text += page_ocr_text + " "
 
+            # 基本的な英数字正規化
+            # perform_ocr_rescue 内の文字正規化と照合部分
+
             ocr_norm = re.sub(r'[^A-Za-z0-9]', '', page_ocr_text).upper()
-            if target_norm in ocr_norm:
+
+            # 表記揺れ（1/I/O/0、記号潰れ '?'）を完全に統一
+            ocr_norm_replaced = (
+                ocr_norm.replace("OX", "10X")      # 'OX' ➔ '10X'
+                        .replace("1OX", "10X")     # '1OX' ➔ '10X'
+                        .replace("IOX", "10X")     # 'IOX' ➔ '10X'
+                        .replace("OX2", "10X2")    # 'OX2' ➔ '10X2'
+            )
+
+            target_norm_replaced = (
+                target_norm.replace("IOX", "10X")
+                        .replace("1OX", "10X")
+            )
+
+            if (target_norm in ocr_norm) or (target_norm_replaced in ocr_norm_replaced):
                 is_item_found = True
+                break
 
     except Exception as e:
         print(f"      └ ⚠️ OCR処理例外: {e}")
     finally:
         if pdf is not None:
             try:
-                pdf.close()  # 確実にファイルロックを解除
+                pdf.close()
             except Exception:
                 pass
+
     return is_item_found, all_ocr_text
