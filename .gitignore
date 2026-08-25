@@ -1,9 +1,9 @@
-# 仮想環境（Git管理不要）
 .venv/
 
 # キャッシュ
 __pycache__/
 *.pyc
 
-# 実データ
 files/
+temp_stamp.png
+*.log
