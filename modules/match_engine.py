@@ -27,11 +27,12 @@ def match_po_number(ex_po: str, pdf_list: list) -> dict | None:
 
 def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     """
-    ExcelデータとPDFデータの照合を行い、判定結果（PO, 型式, 数量, 単価）を返す
+    ExcelデータとPDFデータの照合を行い、判定結果（PO, 型式, 数量, 単価）とログを返す
     """
     pdf_text_raw = matched_pdf["text_raw"]
     pdf_text_no_comma = pdf_text_raw.replace(",", "")
     ocr_extracted_text = ""
+    rescue_logs = []  # ★ メッセージ出力用の配列を用意
 
     ex_po = ex_data["po"]
     ex_item = ex_data["item"]
@@ -84,7 +85,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
 
     # 第2・3段階: 救済クロップ（18% / 35%）
     if not check_item and ex_item_clean:
-        print("      └ ⚠️ 通常抽出で型式が不一致のため、救済モード（ブロック位置解析）を発動します...")
+        rescue_logs.append("      └ ⚠️ 通常抽出で型式が不一致のため、救済モード（ブロック位置解析）を発動します...")
 
         # 18%クロップ (MCL用)
         left_text_18 = extract_left_column_text(matched_pdf["path"], ratio=0.18)
@@ -94,7 +95,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
 
         if (ex_item_clean in clean_18 or f"K-{ex_item_clean}" in clean_18 or ex_item_clean in clean_18.replace("K-", "") or ex_item_norm in norm_18 or ex_item_alphanumeric in alpha_18):
             check_item = True
-            print("      └ 🌸 救済モード(18%幅)により型式ブロックを正常検出！")
+            rescue_logs.append("      └ 🌸 救済モード(18%幅)により型式ブロックを正常検出！")
         else:
             # 35%クロップ (通常用)
             left_text_35 = extract_left_column_text(matched_pdf["path"], ratio=0.35)
@@ -104,16 +105,16 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
 
             if (ex_item_clean in clean_35 or f"K-{ex_item_clean}" in clean_35 or ex_item_clean in clean_35.replace("K-", "") or ex_item_norm in norm_35 or ex_item_alphanumeric in alpha_35):
                 check_item = True
-                print("      └ 🌸 救済モード(35%幅)により型式ブロックを正常検出！")
+                rescue_logs.append("      └ 🌸 救済モード(35%幅)により型式ブロックを正常検出！")
 
     # 第4段階: 【最終手段】OCRスキャン解析
     if not check_item and ex_item_clean:
-        print("      └ 🔍 最終手段: OCR（画像文字認識）スキャン解析を起動中...")
+        rescue_logs.append("      └ 🔍 最終手段: OCR（画像文字認識）スキャン解析を起動中...")
         is_ocr_ok, ocr_text_res = perform_ocr_rescue(matched_pdf["path"], ex_item_clean)
         ocr_extracted_text = ocr_text_res
         if is_ocr_ok:
             check_item = True
-            print("      └ 🌸 OCRスキャン解析により図面内の型式文字を正常検出！")
+            rescue_logs.append("      └ 🌸 OCRスキャン解析により図面内の型式文字を正常検出！")
 
     # --------------------------------------------------
     # 3. 数量チェック
@@ -126,7 +127,6 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     if ex_price_clean == "" or ex_item_clean == "57-04-322":
         check_price = True
     else:
-        # ★ PDF全体のテキストからスペース（半角・全角）を取り除いた比較用文字列を作成
         pdf_text_no_space = pdf_text_raw.replace(" ", "").replace(" ", "")
 
         try:
@@ -148,7 +148,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
                 any(p in pdf_text_raw for p in patterns) or 
                 any(p in pdf_text_no_comma for p in patterns) or
                 any(p in ocr_extracted_text for p in patterns) or
-                (ex_price_clean in pdf_text_no_space)  # ★ スペース除去テキストとの判定を追加
+                (ex_price_clean in pdf_text_no_space)
             )
 
         except ValueError:
@@ -156,7 +156,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
                 (ex_price_clean in pdf_text_raw) or 
                 (ex_price_clean in pdf_text_no_comma) or 
                 (ex_price_clean in ocr_extracted_text) or
-                (ex_price_clean in pdf_text_no_space)  # ★ 例外時もスペース除去で判定
+                (ex_price_clean in pdf_text_no_space)
             )
 
     return {
@@ -164,5 +164,6 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
         "item": check_item,
         "qty": check_qty,
         "price": check_price,
-        "is_all_ok": (check_item and check_qty and check_price)
+        "is_all_ok": (check_item and check_qty and check_price),
+        "rescue_logs": rescue_logs  # ★ 溜めたログメッセージを返却
     }

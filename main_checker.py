@@ -69,9 +69,15 @@ def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
                 is_price_exempt = (ex_price_clean == "" or ex_item.strip().replace(" ", "") == "57-04-322")
                 price_log = f"'{ex_price_clean}'" if match_res["price"] else ("免除(OK)" if is_price_exempt else "未検出")
 
+                # 1. 📄 PDF検出結果を先に出力
                 print(f"   📄 PDF検出結果: {matched_pdf['name']}")
                 print(f"      └ [PO: {po_log}] | [型式: {item_log}] | [数量: {qty_log}] | [単価: {price_log}]")
 
+                # 2. ⚠️ 救済モードやOCR等の割り込みログがあればここに出力
+                for log_msg in match_res.get("rescue_logs", []):
+                    print(log_msg)
+
+                # 3. 🔍 照合結果を出力
                 results = [
                     f"型式: {'OK' if match_res['item'] else 'NG'}",
                     f"数量: {'OK' if match_res['qty'] else 'NG'}",
