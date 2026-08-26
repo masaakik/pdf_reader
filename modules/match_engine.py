@@ -4,30 +4,32 @@ from modules.pdf_extractor import extract_left_column_text, perform_ocr_rescue
 
 def normalize_model_text(text: str) -> str:
     """
-    型式文字列の表記揺れ（頭ゼロ、余計なスペース、ハイフン、特殊記号等）を強力に補正する
+    型式文字列の表記揺れ（頭ゼロ、余計なスペース、ハイフン等）を補正する
     """
     if not text:
         return ""
     
-    # 全角英数字を半角化し大文字に統一
     t = text.upper()
-    
-    # 1. 「-08」のようなハイフン直後の頭ゼロを補正 (例: "-08" -> "-8")
+    # 1. 「-08」を「-8」へ変換（例: "-08" -> "-8"）
     t = re.sub(r'-0(\d)', r'-\1', t)
-    
-    # 2. 数字とアルファベットの間のスペースを削除 (例: "8 ZSAY" -> "8ZSAY")
+    # 2. 数字と英字の間のスペースを削除（例: "8 ZSAY" -> "8ZSAY"）
     t = re.sub(r'(\d)\s+([A-Z])', r'\1\2', t)
-    
-    # 3. 改行・タブ・スペース全削除
+    # 3. 改行やスペースを完全除去
     t = re.sub(r'\s+', '', t)
-    
     return t
 
 
 def match_po_number(ex_po: str, pdf_list: list) -> dict | None:
     """ExcelのPO番号を元に、合致するPDFデータを特定する"""
+    if not pdf_list:
+        return None
+
+    # 🌸 [山崎タイ案件対策] フォルダ内にPDFが1つしかない場合は、ファイル名や本文の判定をスキップして自動採用
+    if len(pdf_list) == 1:
+        return pdf_list[0]
+
     if not ex_po:
-        return pdf_list[0] if pdf_list else None
+        return pdf_list[0]
 
     ex_po_lstrip = ex_po.lstrip('0')  # 例: '00022789' -> '22789'
 
@@ -79,15 +81,16 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     # --------------------------------------------------
     # 2. 型式チェック（4段階判定）
     # --------------------------------------------------
-    ex_item_clean = ex_item.strip().replace(" ", "")
+    ex_item_clean = ex_item.strip().replace(" ", "").replace(" ", "")
     pdf_text_no_newline = (
         pdf_text_raw.replace("\n", "")
                     .replace("\r", "")
                     .replace("\t", "")
                     .replace(" ", "")
+                    .replace(" ", "")
     )
 
-    # 💡 [強化] 表記揺れ（頭ゼロ・スペース）吸収用の正規化テキストを作成
+    # 💡 [ダイフク案件対策] 表記揺れ補正用のテキストを作成
     ex_item_norm_custom = normalize_model_text(ex_item)
     pdf_text_norm_custom = normalize_model_text(pdf_text_raw)
 
@@ -110,7 +113,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
             ex_item_norm in pdf_text_norm or
             ex_item_alphanumeric in pdf_text_alphanumeric or
             ex_item_zero_o in pdf_text_zero_o or
-            # 🌸 新規追加: 「-08」->「-8」やスペース詰めの表記揺れ補正一致
+            # 🌸 ダイフク等の表記揺れ補正一致
             ex_item_norm_custom in pdf_text_norm_custom or
             ex_item_norm_custom.replace("-", "") in pdf_text_norm_custom.replace("-", "")
         )
@@ -122,7 +125,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
 
         # 18%クロップ (MCL用)
         left_text_18 = extract_left_column_text(matched_pdf["path"], ratio=0.18)
-        clean_18 = left_text_18.replace("\n", "").replace("\r", "").replace("\t", "").replace(" ", "")
+        clean_18 = left_text_18.replace("\n", "").replace("\r", "").replace("\t", "").replace(" ", "").replace(" ", "")
         norm_18 = clean_18.replace("-", "").upper()
         alpha_18 = re.sub(r'[^A-Za-z0-9]', '', clean_18).upper()
         custom_18 = normalize_model_text(left_text_18)
@@ -138,7 +141,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
         else:
             # 35%クロップ (通常用)
             left_text_35 = extract_left_column_text(matched_pdf["path"], ratio=0.35)
-            clean_35 = left_text_35.replace("\n", "").replace("\r", "").replace("\t", "").replace(" ", "")
+            clean_35 = left_text_35.replace("\n", "").replace("\r", "").replace("\t", "").replace(" ", "").replace(" ", "")
             norm_35 = clean_35.replace("-", "").upper()
             alpha_35 = re.sub(r'[^A-Za-z0-9]', '', clean_35).upper()
             custom_35 = normalize_model_text(left_text_35)
@@ -161,7 +164,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     if is_price_exempt:
         pre_check_price = True
     elif ex_price_clean:
-        pdf_text_no_space = pdf_text_raw.replace(" ", "")
+        pdf_text_no_space = pdf_text_raw.replace(" ", "").replace(" ", "")
         try:
             price_val = float(ex_price_clean)
             patterns = [
@@ -207,7 +210,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     if is_price_exempt:
         check_price = True
     else:
-        pdf_text_no_space = pdf_text_raw.replace(" ", "")
+        pdf_text_no_space = pdf_text_raw.replace(" ", "").replace(" ", "")
         try:
             price_val = float(ex_price_clean)
             patterns = [
