@@ -2,6 +2,28 @@ import re
 from pathlib import Path
 from modules.pdf_extractor import extract_left_column_text, perform_ocr_rescue
 
+def normalize_model_text(text: str) -> str:
+    """
+    型式文字列の表記揺れ（頭ゼロ、余計なスペース、ハイフン、特殊記号等）を強力に補正する
+    """
+    if not text:
+        return ""
+    
+    # 全角英数字を半角化し大文字に統一
+    t = text.upper()
+    
+    # 1. 「-08」のようなハイフン直後の頭ゼロを補正 (例: "-08" -> "-8")
+    t = re.sub(r'-0(\d)', r'-\1', t)
+    
+    # 2. 数字とアルファベットの間のスペースを削除 (例: "8 ZSAY" -> "8ZSAY")
+    t = re.sub(r'(\d)\s+([A-Z])', r'\1\2', t)
+    
+    # 3. 改行・タブ・スペース全削除
+    t = re.sub(r'\s+', '', t)
+    
+    return t
+
+
 def match_po_number(ex_po: str, pdf_list: list) -> dict | None:
     """ExcelのPO番号を元に、合致するPDFデータを特定する"""
     if not ex_po:
@@ -57,14 +79,17 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     # --------------------------------------------------
     # 2. 型式チェック（4段階判定）
     # --------------------------------------------------
-    ex_item_clean = ex_item.strip().replace(" ", "").replace(" ", "")
+    ex_item_clean = ex_item.strip().replace(" ", "")
     pdf_text_no_newline = (
         pdf_text_raw.replace("\n", "")
                     .replace("\r", "")
                     .replace("\t", "")
                     .replace(" ", "")
-                    .replace(" ", "")
     )
+
+    # 💡 [強化] 表記揺れ（頭ゼロ・スペース）吸収用の正規化テキストを作成
+    ex_item_norm_custom = normalize_model_text(ex_item)
+    pdf_text_norm_custom = normalize_model_text(pdf_text_raw)
 
     ex_item_norm = ex_item_clean.replace("-", "").upper()
     pdf_text_norm = pdf_text_no_newline.replace("-", "").upper()
@@ -84,7 +109,10 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
             ex_item_clean in pdf_text_no_newline.replace("K-", "") or
             ex_item_norm in pdf_text_norm or
             ex_item_alphanumeric in pdf_text_alphanumeric or
-            ex_item_zero_o in pdf_text_zero_o
+            ex_item_zero_o in pdf_text_zero_o or
+            # 🌸 新規追加: 「-08」->「-8」やスペース詰めの表記揺れ補正一致
+            ex_item_norm_custom in pdf_text_norm_custom or
+            ex_item_norm_custom.replace("-", "") in pdf_text_norm_custom.replace("-", "")
         )
     )
 
@@ -94,21 +122,33 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
 
         # 18%クロップ (MCL用)
         left_text_18 = extract_left_column_text(matched_pdf["path"], ratio=0.18)
-        clean_18 = left_text_18.replace("\n", "").replace("\r", "").replace("\t", "").replace(" ", "").replace(" ", "")
+        clean_18 = left_text_18.replace("\n", "").replace("\r", "").replace("\t", "").replace(" ", "")
         norm_18 = clean_18.replace("-", "").upper()
         alpha_18 = re.sub(r'[^A-Za-z0-9]', '', clean_18).upper()
+        custom_18 = normalize_model_text(left_text_18)
 
-        if (ex_item_clean in clean_18 or f"K-{ex_item_clean}" in clean_18 or ex_item_clean in clean_18.replace("K-", "") or ex_item_norm in norm_18 or ex_item_alphanumeric in alpha_18):
+        if (ex_item_clean in clean_18 or 
+            f"K-{ex_item_clean}" in clean_18 or 
+            ex_item_clean in clean_18.replace("K-", "") or 
+            ex_item_norm in norm_18 or 
+            ex_item_alphanumeric in alpha_18 or
+            ex_item_norm_custom in custom_18):
             check_item = True
             rescue_logs.append("      └ 🌸 救済モード(18%幅)により型式ブロックを正常検出！")
         else:
             # 35%クロップ (通常用)
             left_text_35 = extract_left_column_text(matched_pdf["path"], ratio=0.35)
-            clean_35 = left_text_35.replace("\n", "").replace("\r", "").replace("\t", "").replace(" ", "").replace(" ", "")
+            clean_35 = left_text_35.replace("\n", "").replace("\r", "").replace("\t", "").replace(" ", "")
             norm_35 = clean_35.replace("-", "").upper()
             alpha_35 = re.sub(r'[^A-Za-z0-9]', '', clean_35).upper()
+            custom_35 = normalize_model_text(left_text_35)
 
-            if (ex_item_clean in clean_35 or f"K-{ex_item_clean}" in clean_35 or ex_item_clean in clean_35.replace("K-", "") or ex_item_norm in norm_35 or ex_item_alphanumeric in alpha_35):
+            if (ex_item_clean in clean_35 or 
+                f"K-{ex_item_clean}" in clean_35 or 
+                ex_item_clean in clean_35.replace("K-", "") or 
+                ex_item_norm in norm_35 or 
+                ex_item_alphanumeric in alpha_35 or
+                ex_item_norm_custom in custom_35):
                 check_item = True
                 rescue_logs.append("      └ 🌸 救済モード(35%幅)により型式ブロックを正常検出！")
 
@@ -121,7 +161,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     if is_price_exempt:
         pre_check_price = True
     elif ex_price_clean:
-        pdf_text_no_space = pdf_text_raw.replace(" ", "").replace(" ", "")
+        pdf_text_no_space = pdf_text_raw.replace(" ", "")
         try:
             price_val = float(ex_price_clean)
             patterns = [
@@ -167,7 +207,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     if is_price_exempt:
         check_price = True
     else:
-        pdf_text_no_space = pdf_text_raw.replace(" ", "").replace(" ", "")
+        pdf_text_no_space = pdf_text_raw.replace(" ", "")
         try:
             price_val = float(ex_price_clean)
             patterns = [
