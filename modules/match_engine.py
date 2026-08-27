@@ -4,17 +4,30 @@ from modules.pdf_extractor import extract_left_column_text, perform_ocr_rescue
 
 def normalize_model_text(text: str) -> str:
     """
-    型式文字列の表記揺れ（頭ゼロ、余計なスペース、ハイフン等）を補正する
+    型式文字列の表記揺れ（頭ゼロ、余計なスペース、先頭のK-、OCRによる0/O文字化け補正等）を補正する
     """
     if not text:
         return ""
     
     t = text.upper()
-    # 1. 「-08」を「-8」へ変換（例: "-08" -> "-8"）
-    t = re.sub(r'-0(\d)', r'-\1', t)
-    # 2. 数字と英字の間のスペースを削除（例: "8 ZSAY" -> "8ZSAY"）
-    t = re.sub(r'(\d)\s+([A-Z])', r'\1\2', t)
-    # 3. 改行やスペースを完全除去
+    
+    # 1. 先頭の「K-」や「K」を除去 (MCL案件用)
+    if t.startswith("K-"):
+        t = t[2:]
+    elif t.startswith("K") and len(t) > 1 and not t.startswith("K3"):
+        t = t[1:]
+
+    # 2. OCR文字化け補正（\g<1> と \g<2> でエラーを完全防止）
+    t = re.sub(r'(\d)O([A-Z0-9])', r'\g<1>0\g<2>', t)  # 例: "3OH" -> "30H"
+    t = re.sub(r'([A-Z0-9])O(\d)', r'\g<1>0\g<2>', t)  # 例: "HO3" -> "H03"
+
+    # 3. 「-08」を「-8」へ変換 (ダイフク用)
+    t = re.sub(r'-0(\d)', r'-\g<1>', t)
+    
+    # 4. 数字と英字の間のスペースを削除
+    t = re.sub(r'(\d)\s+([A-Z])', r'\g<1>\g<2>', t)
+    
+    # 5. 改行やスペースを完全除去
     t = re.sub(r'\s+', '', t)
     return t
 
@@ -90,7 +103,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
                     .replace(" ", "")
     )
 
-    # 💡 [ダイフク案件対策] 表記揺れ補正用のテキストを作成
+    # 💡 表記揺れ補正用のテキストを作成
     ex_item_norm_custom = normalize_model_text(ex_item)
     pdf_text_norm_custom = normalize_model_text(pdf_text_raw)
 
@@ -113,7 +126,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
             ex_item_norm in pdf_text_norm or
             ex_item_alphanumeric in pdf_text_alphanumeric or
             ex_item_zero_o in pdf_text_zero_o or
-            # 🌸 ダイフク等の表記揺れ補正一致
+            # 🌸 表記揺れ補正一致（ダイフク・MCL等の表記揺れを吸収）
             ex_item_norm_custom in pdf_text_norm_custom or
             ex_item_norm_custom.replace("-", "") in pdf_text_norm_custom.replace("-", "")
         )
@@ -198,7 +211,10 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
         is_ocr_ok, ocr_text_res = perform_ocr_rescue(matched_pdf["path"], ex_item_clean)
         ocr_extracted_text = ocr_text_res
         
-        if is_ocr_ok:
+        # 🌸 💡 [MCL案件画像PDF対策] OCRで読み取ったテキストも正規化して判定を追加
+        ocr_norm_custom = normalize_model_text(ocr_extracted_text)
+        
+        if is_ocr_ok or (ex_item_norm_custom in ocr_norm_custom):
             check_item = True
             rescue_logs.append("      └ 🌸 OCRスキャン解析により図面内の文字情報を正常検出！")
 

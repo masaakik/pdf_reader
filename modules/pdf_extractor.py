@@ -86,7 +86,7 @@ def extract_left_column_text(pdf_path: Path, ratio: float = 0.18) -> str:
 
 
 def perform_ocr_rescue(pdf_path: Path, target_item_clean: str) -> tuple[bool, str]:
-    """最終手段: 1ページ目を軽量化画像(scale=1.5)で高速OCR解析する"""
+    """最終手段: 注文書ページを画像化(scale=3.0)して高精度OCR解析する"""
     if not EASYOCR_AVAILABLE:
         print("      └ ⚠️ easyocr / pypdfium2 パッケージが未インストールのためOCRをスキップします。")
         return False, ""
@@ -104,6 +104,8 @@ def perform_ocr_rescue(pdf_path: Path, target_item_clean: str) -> tuple[bool, st
             return False, ""
 
         pdf = pdfium.PdfDocument(pdf_path)
+        
+        # 英数字のみに削ったターゲット型式
         target_norm = re.sub(r'[^A-Za-z0-9]', '', target_item_clean).upper()
 
         # --------------------------------------------------
@@ -128,7 +130,7 @@ def perform_ocr_rescue(pdf_path: Path, target_item_clean: str) -> tuple[bool, st
         for idx in target_indices:
             page = pdf[idx]
             
-            # ★ scale=3.0 ＋ グレースケールで微小な文字（4とAなど）の潰れを完全防止
+            # ★ scale=3.0 ＋ グレースケールで文字の潰れを防止
             pil_image = page.render(scale=3.0).to_pil().convert('L')
             img_np = np.array(pil_image)
             
@@ -136,25 +138,41 @@ def perform_ocr_rescue(pdf_path: Path, target_item_clean: str) -> tuple[bool, st
             page_ocr_text = " ".join(results)
             all_ocr_text += page_ocr_text + " "
 
-            # 基本的な英数字正規化
-            # perform_ocr_rescue 内の文字正規化と照合部分
-
+            # OCRテキストの英数字正規化
             ocr_norm = re.sub(r'[^A-Za-z0-9]', '', page_ocr_text).upper()
 
-            # 表記揺れ（1/I/O/0、記号潰れ '?'）を完全に統一
+            # 💡 [MCL案件等の対策] OCRテキストが「K-型式」や「K型式」になっている場合に「K」を削ったバリエーションを作成
+            ocr_norm_no_k = ocr_norm
+            if ocr_norm.startswith("K") and not ocr_norm.startswith("K3"):
+                ocr_norm_no_k = ocr_norm[1:]
+
+            # 表記揺れ（1/I/O/0、記号潰れ）を補正
             ocr_norm_replaced = (
-                ocr_norm.replace("OX", "10X")      # 'OX' ➔ '10X'
-                        .replace("1OX", "10X")     # '1OX' ➔ '10X'
-                        .replace("IOX", "10X")     # 'IOX' ➔ '10X'
-                        .replace("OX2", "10X2")    # 'OX2' ➔ '10X2'
+                ocr_norm.replace("OX", "10X")
+                        .replace("1OX", "10X")
+                        .replace("IOX", "10X")
+                        .replace("OX2", "10X2")
+            )
+
+            ocr_norm_no_k_replaced = (
+                ocr_norm_no_k.replace("OX", "10X")
+                             .replace("1OX", "10X")
+                             .replace("IOX", "10X")
+                             .replace("OX2", "10X2")
             )
 
             target_norm_replaced = (
                 target_norm.replace("IOX", "10X")
-                        .replace("1OX", "10X")
+                           .replace("1OX", "10X")
             )
 
-            if (target_norm in ocr_norm) or (target_norm_replaced in ocr_norm_replaced):
+            # 🌸 ターゲット型式が含まれるかチェック（K除去パターン含む）
+            if (
+                (target_norm in ocr_norm) or 
+                (target_norm in ocr_norm_no_k) or 
+                (target_norm_replaced in ocr_norm_replaced) or 
+                (target_norm_replaced in ocr_norm_no_k_replaced)
+            ):
                 is_item_found = True
                 break
 
