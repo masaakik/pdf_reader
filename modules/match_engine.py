@@ -4,31 +4,35 @@ from modules.pdf_extractor import extract_left_column_text, perform_ocr_rescue
 
 def normalize_model_text(text: str) -> str:
     """
-    型式文字列の表記揺れ（頭ゼロ、余計なスペース、先頭のK-、OCRによる0/O文字化け補正等）を補正する
+    型式文字列の表記揺れ（頭ゼロ、スペース、先頭のK-、0/O文字化け、1S/15文字化け等）を補正する
     """
     if not text:
         return ""
     
     t = text.upper()
     
-    # 1. 先頭の「K-」や「K」を除去 (MCL案件用)
+    # 1. 先頭の「K-」や「K」を除去 (MCL用)
     if t.startswith("K-"):
         t = t[2:]
     elif t.startswith("K") and len(t) > 1 and not t.startswith("K3"):
         t = t[1:]
 
-    # 2. OCR文字化け補正（\g<1> と \g<2> でエラーを完全防止）
+    # 2. OCR文字化け補正 (0/O 補正)
     t = re.sub(r'(\d)O([A-Z0-9])', r'\g<1>0\g<2>', t)  # 例: "3OH" -> "30H"
     t = re.sub(r'([A-Z0-9])O(\d)', r'\g<1>0\g<2>', t)  # 例: "HO3" -> "H03"
 
-    # 3. 「-08」を「-8」へ変換 (ダイフク用)
+    # 🌸 3. 画面サイズ・寸法記号の OCR 文字化け補正 ( Rollflex 対策: "W1S" -> "W15" )
+    t = re.sub(r'W(\d)S', r'W\g<1>5', t)  # 例: "W1S" -> "W15"
+    t = t.replace("1S", "15")
+
+    # 4. 「-08」を「-8」へ変換 (ダイフク用)
     t = re.sub(r'-0(\d)', r'-\g<1>', t)
     
-    # 4. 数字と英字の間のスペースを削除
+    # 5. 数字と英字の間のスペースを削除
     t = re.sub(r'(\d)\s+([A-Z])', r'\g<1>\g<2>', t)
     
-    # 5. 改行やスペースを完全除去
-    t = re.sub(r'\s+', '', t)
+    # 6. 改行・スペース・掛け算記号の 'X' / 'x' をハイフン除去と同様に統一除去
+    t = re.sub(r'[\s\-\_X]+', '', t)
     return t
 
 

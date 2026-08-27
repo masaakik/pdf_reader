@@ -1,14 +1,19 @@
 from pathlib import Path
+import pdfplumber
 import pypdfium2 as pdfium
 import easyocr
 import numpy as np
 
-# files フォルダ内の「0091794」を含むフォルダを自動検出
-files_dir = Path("files")
-target_dirs = [d for d in files_dir.glob("*0091794*") if d.is_dir()]
+# 1. files フォルダから「Rollflex」を含むフォルダを自動検出（スペースズレを回避）
+base_dir = Path("files")
+target_dirs = [d for d in base_dir.glob("*Rollflex*") if d.is_dir()]
 
 if not target_dirs:
-    print("❌ 対象フォルダが見つかりませんでした。")
+    # 万が一見つからない場合は「山崎」で再検索
+    target_dirs = [d for d in base_dir.glob("*山崎*") if d.is_dir()]
+
+if not target_dirs:
+    print("❌ 指定条件に合うフォルダが見つかりませんでした。")
 else:
     target_dir = target_dirs[0]
     pdf_files = list(target_dir.glob("*.pdf"))
@@ -18,17 +23,32 @@ else:
     else:
         pdf_path = pdf_files[0]
         print(f"📂 検出フォルダ: {target_dir.name}")
-        print(f"📄 読み込みPDF: {pdf_path.name}")
+        print(f"📄 対象PDF: {pdf_path.name}\n")
 
-        pdf = pdfium.PdfDocument(pdf_path)
-        page = pdf[0]
+        # --- ① pdfplumber テキスト抽出 ---
+        print("=== 【1. pdfplumber テキスト抽出】 ===")
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    text = page.extract_text() or ""
+                    print(f"--- ページ {i+1} ---")
+                    print(repr(text))
+        except Exception as e:
+            print(f"⚠️ pdfplumber 抽出エラー: {e}")
 
-        # scale=3.0 でレンダリングしてOCR実行
-        pil_image = page.render(scale=3.0).to_pil().convert('L')
-        img_np = np.array(pil_image)
+        # --- ② EasyOCR 解析 ---
+        print("\n=== 【2. EasyOCR (scale=3.0) 認識テキスト】 ===")
+        try:
+            pdf_doc = pdfium.PdfDocument(pdf_path)
+            page = pdf_doc[0]
 
-        reader = easyocr.Reader(['en'], gpu=False)
-        results = reader.readtext(img_np, detail=0)
+            pil_image = page.render(scale=3.0).to_pil().convert('L')
+            img_np = np.array(pil_image)
 
-        print("\n=== EasyOCRが認識した全テキスト ===")
-        print(" ".join(results))
+            reader = easyocr.Reader(['en'], gpu=False)
+            results = reader.readtext(img_np, detail=0)
+
+            print(" ".join(results))
+            pdf_doc.close()
+        except Exception as e:
+            print(f"⚠️ OCR処理エラー: {e}")
