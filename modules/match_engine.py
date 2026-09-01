@@ -4,12 +4,15 @@ from modules.pdf_extractor import extract_left_column_text, perform_ocr_rescue
 
 def normalize_model_text(text: str) -> str:
     """
-    型式文字列の表記揺れ（頭ゼロ、スペース、先頭のK-、0/O文字化け、1S/15文字化け等）を補正する
+    型式文字列の表記揺れ（ソフトハイフン\xad、識別記号KYO、0/O文字化け、ハイフン・記号等）を補正する
     """
     if not text:
         return ""
     
     t = text.upper()
+    
+    # 🌸 0. PDF特有の不可視文字(Soft Hyphen \xad) と 識別記号「KYO」を消去
+    t = t.replace("\xad", "").replace("KYO", "")
     
     # 1. 先頭の「K-」や「K」を除去 (MCL用)
     if t.startswith("K-"):
@@ -18,11 +21,11 @@ def normalize_model_text(text: str) -> str:
         t = t[1:]
 
     # 2. OCR文字化け補正 (0/O 補正)
-    t = re.sub(r'(\d)O([A-Z0-9])', r'\g<1>0\g<2>', t)  # 例: "3OH" -> "30H"
-    t = re.sub(r'([A-Z0-9])O(\d)', r'\g<1>0\g<2>', t)  # 例: "HO3" -> "H03"
+    t = re.sub(r'(\d)O([A-Z0-9])', r'\g<1>0\g<2>', t)
+    t = re.sub(r'([A-Z0-9])O(\d)', r'\g<1>0\g<2>', t)
 
     # 3. 画面サイズ・寸法記号の OCR 文字化け補正 ( Rollflex 対策: "W1S" -> "W15" )
-    t = re.sub(r'W(\d)S', r'W\g<1>5', t)  # 例: "W1S" -> "W15"
+    t = re.sub(r'W(\d)S', r'W\g<1>5', t)
     t = t.replace("1S", "15")
 
     # 4. 「-08」を「-8」へ変換 (ダイフク用)
@@ -31,10 +34,9 @@ def normalize_model_text(text: str) -> str:
     # 5. 数字と英字の間のスペースを削除
     t = re.sub(r'(\d)\s+([A-Z])', r'\g<1>\g<2>', t)
     
-    # 6. 改行・スペース・掛け算記号の 'X' / 'x' をハイフン除去と同様に統一除去
-    t = re.sub(r'[\s\-\_X]+', '', t)
+    # 🌸 6. 改行・スペース・ハイフン・アンダースコア・カンマ・ピリオド・記号類を完全除去
+    t = re.sub(r'[\s\-\_\,\.]+', '', t)
     return t
-
 
 def match_po_number(ex_po: str, pdf_list: list) -> dict | None:
     """ExcelのPO番号を元に、合致するPDFデータを特定する"""
@@ -177,8 +179,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     is_price_exempt = (ex_price_clean == "" or ex_item_clean == "57-04-322")
     pre_check_price = False
 
-    # 🌸 文字間スペース・改行・カンマを削ぎ落としてピリオド変換した単価照合用テキスト
-    # 例: "1 9 1 1 , 6 0 / E A" -> "1911.60/EA"
+    # 文字間スペース・改行・カンマを削ぎ落としてピリオド変換した単価照合用テキスト
     pdf_text_clean_price = (
         pdf_text_raw.replace(" ", "")
                     .replace(" ", "")
