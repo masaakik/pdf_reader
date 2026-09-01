@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont
 
-def create_inspection_stamp(name_top="河", name_bottom="本", output_path="temp_stamp.png") -> str:
+def create_inspection_stamp(name_top="自", name_bottom="動", output_path="temp_stamp.png") -> str:
     """電子印鑑（デーツスタンプ）を自動生成する"""
     size = 400
     padding = 10

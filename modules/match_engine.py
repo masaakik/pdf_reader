@@ -21,7 +21,7 @@ def normalize_model_text(text: str) -> str:
     t = re.sub(r'(\d)O([A-Z0-9])', r'\g<1>0\g<2>', t)  # 例: "3OH" -> "30H"
     t = re.sub(r'([A-Z0-9])O(\d)', r'\g<1>0\g<2>', t)  # 例: "HO3" -> "H03"
 
-    # 🌸 3. 画面サイズ・寸法記号の OCR 文字化け補正 ( Rollflex 対策: "W1S" -> "W15" )
+    # 3. 画面サイズ・寸法記号の OCR 文字化け補正 ( Rollflex 対策: "W1S" -> "W15" )
     t = re.sub(r'W(\d)S', r'W\g<1>5', t)  # 例: "W1S" -> "W15"
     t = t.replace("1S", "15")
 
@@ -41,7 +41,7 @@ def match_po_number(ex_po: str, pdf_list: list) -> dict | None:
     if not pdf_list:
         return None
 
-    # 🌸 [山崎タイ案件対策] フォルダ内にPDFが1つしかない場合は、ファイル名や本文の判定をスキップして自動採用
+    # [山崎タイ案件対策] フォルダ内にPDFが1つしかない場合は、ファイル名や本文の判定をスキップして自動採用
     if len(pdf_list) == 1:
         return pdf_list[0]
 
@@ -107,7 +107,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
                     .replace(" ", "")
     )
 
-    # 💡 表記揺れ補正用のテキストを作成
+    # 表記揺れ補正用のテキストを作成
     ex_item_norm_custom = normalize_model_text(ex_item)
     pdf_text_norm_custom = normalize_model_text(pdf_text_raw)
 
@@ -130,7 +130,6 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
             ex_item_norm in pdf_text_norm or
             ex_item_alphanumeric in pdf_text_alphanumeric or
             ex_item_zero_o in pdf_text_zero_o or
-            # 🌸 表記揺れ補正一致（ダイフク・MCL等の表記揺れを吸収）
             ex_item_norm_custom in pdf_text_norm_custom or
             ex_item_norm_custom.replace("-", "") in pdf_text_norm_custom.replace("-", "")
         )
@@ -178,12 +177,25 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     is_price_exempt = (ex_price_clean == "" or ex_item_clean == "57-04-322")
     pre_check_price = False
 
+    # 🌸 文字間スペース・改行・カンマを削ぎ落としてピリオド変換した単価照合用テキスト
+    # 例: "1 9 1 1 , 6 0 / E A" -> "1911.60/EA"
+    pdf_text_clean_price = (
+        pdf_text_raw.replace(" ", "")
+                    .replace(" ", "")
+                    .replace("\n", "")
+                    .replace("\r", "")
+                    .replace(",", ".")
+    )
+    pdf_text_no_space = pdf_text_raw.replace(" ", "").replace(" ", "")
+
     if is_price_exempt:
         pre_check_price = True
     elif ex_price_clean:
-        pdf_text_no_space = pdf_text_raw.replace(" ", "").replace(" ", "")
         try:
             price_val = float(ex_price_clean)
+            price_str_dot = f"{price_val:.2f}"   # 例: "1911.60"
+            price_str_short = f"{price_val}"     # 例: "1911.6"
+
             patterns = [
                 ex_price_clean,
                 f"{price_val:,.2f}",
@@ -191,20 +203,23 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
                 f"¥{price_val:,.0f}", f"￥{price_val:,.0f}",
                 f"JPY{price_val:,.0f}", f"JPY {price_val:,.0f}",
                 f"{price_val:.0f}",
-                f"{price_val:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-                f"{price_val:.2f}".replace(".", ","),
-                ex_price_clean.replace(".", ",")
+                price_str_dot,
+                price_str_short
             ]
+
             pre_check_price = (
                 any(p in pdf_text_raw for p in patterns) or 
                 any(p in pdf_text_no_comma for p in patterns) or
-                (ex_price_clean in pdf_text_no_space)
+                (ex_price_clean in pdf_text_no_space) or
+                (price_str_dot in pdf_text_clean_price) or
+                (price_str_short in pdf_text_clean_price)
             )
         except ValueError:
             pre_check_price = (
                 (ex_price_clean in pdf_text_raw) or 
                 (ex_price_clean in pdf_text_no_comma) or 
-                (ex_price_clean in pdf_text_no_space)
+                (ex_price_clean in pdf_text_no_space) or
+                (ex_price_clean in pdf_text_clean_price)
             )
 
     # --------------------------------------------------
@@ -215,7 +230,6 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
         is_ocr_ok, ocr_text_res = perform_ocr_rescue(matched_pdf["path"], ex_item_clean)
         ocr_extracted_text = ocr_text_res
         
-        # 🌸 💡 [MCL案件画像PDF対策] OCRで読み取ったテキストも正規化して判定を追加
         ocr_norm_custom = normalize_model_text(ocr_extracted_text)
         
         if is_ocr_ok or (ex_item_norm_custom in ocr_norm_custom):
@@ -230,9 +244,11 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
     if is_price_exempt:
         check_price = True
     else:
-        pdf_text_no_space = pdf_text_raw.replace(" ", "").replace(" ", "")
         try:
             price_val = float(ex_price_clean)
+            price_str_dot = f"{price_val:.2f}"
+            price_str_short = f"{price_val}"
+
             patterns = [
                 ex_price_clean,
                 f"{price_val:,.2f}",
@@ -240,15 +256,17 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
                 f"¥{price_val:,.0f}", f"￥{price_val:,.0f}",
                 f"JPY{price_val:,.0f}", f"JPY {price_val:,.0f}",
                 f"{price_val:.0f}",
-                f"{price_val:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-                f"{price_val:.2f}".replace(".", ","),
-                ex_price_clean.replace(".", ",")
+                price_str_dot,
+                price_str_short
             ]
+
             check_price = (
                 any(p in pdf_text_raw for p in patterns) or 
                 any(p in pdf_text_no_comma for p in patterns) or
                 any(p in ocr_extracted_text for p in patterns) or
                 (ex_price_clean in pdf_text_no_space) or
+                (price_str_dot in pdf_text_clean_price) or
+                (price_str_short in pdf_text_clean_price) or
                 (ex_price_clean in ocr_extracted_text.replace(",", "").replace(" ", ""))
             )
         except ValueError:
@@ -257,6 +275,7 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
                 (ex_price_clean in pdf_text_no_comma) or 
                 (ex_price_clean in ocr_extracted_text) or
                 (ex_price_clean in pdf_text_no_space) or
+                (ex_price_clean in pdf_text_clean_price) or
                 (ex_price_clean in ocr_extracted_text.replace(",", "").replace(" ", ""))
             )
 

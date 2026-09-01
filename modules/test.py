@@ -1,16 +1,12 @@
 from pathlib import Path
 import pdfplumber
-import pypdfium2 as pdfium
-import easyocr
-import numpy as np
 
-# 1. files フォルダから「Rollflex」を含むフォルダを自動検出（スペースズレを回避）
+# 1. files フォルダから「4502234358」または「KION」を含むフォルダを自動検出
 base_dir = Path("files")
-target_dirs = [d for d in base_dir.glob("*Rollflex*") if d.is_dir()]
+target_dirs = [d for d in base_dir.glob("*4502234358*") if d.is_dir()]
 
 if not target_dirs:
-    # 万が一見つからない場合は「山崎」で再検索
-    target_dirs = [d for d in base_dir.glob("*山崎*") if d.is_dir()]
+    target_dirs = [d for d in base_dir.glob("*KION*") if d.is_dir()]
 
 if not target_dirs:
     print("❌ 指定条件に合うフォルダが見つかりませんでした。")
@@ -36,9 +32,13 @@ else:
         except Exception as e:
             print(f"⚠️ pdfplumber 抽出エラー: {e}")
 
-        # --- ② EasyOCR 解析 ---
+        # --- ② EasyOCR 解析 (未アクセスの場合は安全にスキップ) ---
         print("\n=== 【2. EasyOCR (scale=3.0) 認識テキスト】 ===")
         try:
+            import pypdfium2 as pdfium
+            import easyocr
+            import numpy as np
+
             pdf_doc = pdfium.PdfDocument(pdf_path)
             page = pdf_doc[0]
 
@@ -50,5 +50,8 @@ else:
 
             print(" ".join(results))
             pdf_doc.close()
+        except ModuleNotFoundError as e:
+            print(f"⚠️ パッケージ未インストールのためのスキップ: {e}")
         except Exception as e:
             print(f"⚠️ OCR処理エラー: {e}")
+            
