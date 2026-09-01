@@ -224,19 +224,25 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
             )
 
     # --------------------------------------------------
-    # 4. 第4段階: 【最終手段】OCRスキャン解析（型式NG または 単価NG の場合に起動）
+    # 4. 第4段階: 【最終手段】OCRスキャン解析
+    #    (型式/単価NG かつ PDFテキストが極端に少ないスキャンPDFの場合のみ起動)
     # --------------------------------------------------
-    if (not check_item or not pre_check_price) and ex_item_clean:
-        rescue_logs.append("      └ 🔍 最終手段: OCR（画像文字認識）スキャン解析を起動中...")
+    # 🌸 PDFテキストの文字数が少ない（例: 50文字未満）＝ 画像スキャンPDFとみなす
+    is_scan_pdf = len(pdf_text_raw.strip()) < 50
+
+    if (not check_item or not pre_check_price) and ex_item_clean and is_scan_pdf:
+        rescue_logs.append("      └ 🔍 最終手段: 画像スキャンPDFと判断したため、OCR解析を起動中...")
         is_ocr_ok, ocr_text_res = perform_ocr_rescue(matched_pdf["path"], ex_item_clean)
         ocr_extracted_text = ocr_text_res
         
         ocr_norm_custom = normalize_model_text(ocr_extracted_text)
         
-        if is_ocr_ok or (ex_item_norm_custom in ocr_norm_custom):
+        if is_ocr_ok or (ex_item_norm_custom and ex_item_norm_custom in ocr_norm_custom):
             check_item = True
             rescue_logs.append("      └ 🌸 OCRスキャン解析により図面内の文字情報を正常検出！")
-
+    elif (not check_item or not pre_check_price) and ex_item_clean:
+        rescue_logs.append("      └ ℹ️ PDFからテキストが正常抽出されているため、無駄なOCR解析はスキップします。")
+        
     # --------------------------------------------------
     # 5. 最終数量 ＆ 最終単価チェック (OCRテキスト含めて確定)
     # --------------------------------------------------
