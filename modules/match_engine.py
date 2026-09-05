@@ -11,7 +11,7 @@ def normalize_model_text(text: str) -> str:
     
     t = text.upper()
     
-    # 🌸 0. PDF特有の不可視文字(Soft Hyphen \xad) と 識別記号「KYO」を消去
+    # 0. PDF特有の不可視文字(Soft Hyphen \xad) と 識別記号「KYO」を消去
     t = t.replace("\xad", "").replace("KYO", "")
     
     # 1. 先頭の「K-」や「K」を除去 (MCL用)
@@ -34,9 +34,10 @@ def normalize_model_text(text: str) -> str:
     # 5. 数字と英字の間のスペースを削除
     t = re.sub(r'(\d)\s+([A-Z])', r'\g<1>\g<2>', t)
     
-    # 🌸 6. 改行・スペース・ハイフン・アンダースコア・カンマ・ピリオド・記号類を完全除去
+    # 6. 改行・スペース・ハイフン・アンダースコア・カンマ・ピリオド・記号類を完全除去
     t = re.sub(r'[\s\-\_\,\.]+', '', t)
     return t
+
 
 def match_po_number(ex_po: str, pdf_list: list) -> dict | None:
     """ExcelのPO番号を元に、合致するPDFデータを特定する"""
@@ -197,10 +198,17 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
             price_str_dot = f"{price_val:.2f}"   # 例: "1911.60"
             price_str_short = f"{price_val}"     # 例: "1911.6"
 
+            # 🌸 欧州形式の千の桁区切り（ピリオド区切り）パターンを生成
+            price_int = int(price_val)
+            price_eu_thousand = f"{price_int:,}".replace(",", ".")  # 例: "1.916"
+            price_eu_thousand_dec = f"{price_eu_thousand},00"        # 例: "1.916,00"
+
             patterns = [
                 ex_price_clean,
                 f"{price_val:,.2f}",
                 f"{price_val:,.0f}",
+                price_eu_thousand,          # 🌸 追加: "1.916"
+                price_eu_thousand_dec,      # 🌸 追加: "1.916,00"
                 f"¥{price_val:,.0f}", f"￥{price_val:,.0f}",
                 f"JPY{price_val:,.0f}", f"JPY {price_val:,.0f}",
                 f"{price_val:.0f}",
@@ -250,10 +258,17 @@ def verify_po_items(ex_data: dict, matched_pdf: dict) -> dict:
             price_str_dot = f"{price_val:.2f}"
             price_str_short = f"{price_val}"
 
+            # 🌸 欧州形式の千の桁区切り（ピリオド区切り）パターンを生成
+            price_int = int(price_val)
+            price_eu_thousand = f"{price_int:,}".replace(",", ".")  # 例: "1.916"
+            price_eu_thousand_dec = f"{price_eu_thousand},00"        # 例: "1.916,00"
+
             patterns = [
                 ex_price_clean,
                 f"{price_val:,.2f}",
                 f"{price_val:,.0f}",
+                price_eu_thousand,          # 🌸 追加: "1.916"
+                price_eu_thousand_dec,      # 🌸 追加: "1.916,00"
                 f"¥{price_val:,.0f}", f"￥{price_val:,.0f}",
                 f"JPY{price_val:,.0f}", f"JPY {price_val:,.0f}",
                 f"{price_val:.0f}",
