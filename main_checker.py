@@ -116,7 +116,7 @@ def process_folder(folder_path: Path, stamp_img_path: str) -> bool:
     return all_stamped
 
 
-def process_all_subfolders(parent_dir: Path, stamp_top="河", stamp_bottom="本"):
+def process_all_subfolders(parent_dir: Path, stamp_top="自", stamp_bottom="動"):
     """親フォルダ内のすべての子フォルダを取得し、順番に処理を実行する"""
     if not parent_dir.exists():
         print(f"❌ エラー: 親フォルダ '{parent_dir}' が存在しません。")
@@ -155,4 +155,4 @@ def process_all_subfolders(parent_dir: Path, stamp_top="河", stamp_bottom="本"
 
 if __name__ == "__main__":
     parent_directory = Path("./files")
-    process_all_subfolders(parent_directory, stamp_top="河", stamp_bottom="本")
+    process_all_subfolders(parent_directory, stamp_top="自", stamp_bottom="動")
